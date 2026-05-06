@@ -2,19 +2,22 @@
 
 This repository is the Rust rewrite workspace for Sandsifter. The reference implementation remains in [`reference/`](reference/) and is currently the source of truth for behavior and compatibility.
 
-The first milestone implemented here establishes:
+The current implementation provides:
 
 - a Rust workspace split into `core`, `injector`, `search`, `disasm`, `summary`, `tui`, and `cli`
 - exact legacy log/tick parsing and writing primitives
 - anomaly filtering semantics copied from the Python frontend
 - search strategy abstractions for brute, random, tunnel, and driven modes
-- injector and disassembler interface boundaries for the later Linux/x86 unsafe backend port
+- a Linux/x86_64 generated-code injector backend
+- an `iced-x86` disassembler backend wired into injector raw packets
 
 Current status:
 
-- `cargo test` validates the shared compatibility layer
-- `sifter` and `injector` binaries currently provide compatibility-oriented CLI parsing shells
-- the native low-level execution backend is not implemented yet
+- `cargo test --workspace` validates the shared compatibility layer
+- `injector` emits legacy-compatible 44-byte raw packets
+- `disas_known` and `disas_length` are populated by a real x86_64 decoder
+- `sifter` records reference-style findings in `data/log` and `data/sync`
+- the native low-level execution backend is implemented for real `x86_64` Linux
 
 Reference code architecture and migration intent are tracked in the conversation plan that drove this workspace layout.
 
@@ -44,7 +47,8 @@ Run the injector or sifter directly by passing the remaining arguments through:
 
 ```sh
 scripts/x86-linux.sh injector -T -b -B 1 -i 90 -e 91
-scripts/x86-linux.sh sifter --unk --dis --len --sync --tick -- -P1 -t
+SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
+scripts/x86-linux.sh sifter --unk --dis --len --sync --tick -- -t -P1
 ```
 
 By default, `sifter` renders a live terminal dashboard with the tested count,
@@ -53,6 +57,24 @@ and recent findings. Use `--no-ui` for log-only automation:
 
 ```sh
 scripts/x86-linux.sh sifter --no-ui --unk --sync -- -b -B 1 -i 00 -e 10
+```
+
+Run a bounded live scan that writes `data/log`, `data/sync`, and `data/last`:
+
+```sh
+scripts/x86-linux.sh build
+
+SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
+scripts/x86-linux.sh sifter --unk --dis --len --sync --tick --save -- -b -B 1 -i 00 -e ff
+```
+
+Run a full tunnel scan:
+
+```sh
+scripts/x86-linux.sh build
+
+SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
+scripts/x86-linux.sh sifter --unk --dis --len --sync --tick --save -- -t -P1
 ```
 
 To validate the frontend, logs, and UI without executing generated processor
@@ -67,6 +89,11 @@ scripts/x86-linux.sh sifter --unk --sync --tick -- --dry-run -b -B 1 -i 90 -e 91
 
 If dry-run increments `tested` but the same command without `--dry-run` stays at
 zero, the unsafe native execution backend is stuck before its first result.
+
+Meaningful `--unk`, `--dis`, and `--len` findings depend on the injector's
+disassembler fields. The Rust injector now fills those fields using `iced-x86`,
+so `--unk` no longer reports every successfully executed instruction as
+unknown.
 
 The runner intentionally refuses to run unless `uname` reports Linux on
 `x86_64`/`amd64`. The smoke commands avoid `-0` null-page mode and do not need

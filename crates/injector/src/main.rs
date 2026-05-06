@@ -2,7 +2,7 @@ use std::env;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use sandblaster_disasm::NullDisassembler;
+use sandblaster_disasm::IcedX86Disassembler;
 use sandblaster_injector::{
     BackendObservation, ExecutionBackend, InjectorConfig, InjectorEngine, InjectorEvent,
     LinuxX86Backend, OutputMode, RawInjectorPacket, TextReport,
@@ -18,7 +18,7 @@ fn main() -> ExitCode {
     match InjectorConfig::parse_args(&args) {
         Ok(config) => {
             if config.dry_run {
-                let mut engine = InjectorEngine::new(NullDisassembler, DryRunBackend, &config);
+                let mut engine = InjectorEngine::new(IcedX86Disassembler, DryRunBackend, &config);
                 run_engine(&mut engine, &config)
             } else {
                 let backend = match LinuxX86Backend::from_config(&config) {
@@ -28,7 +28,7 @@ fn main() -> ExitCode {
                         return ExitCode::from(2);
                     }
                 };
-                let mut engine = InjectorEngine::new(NullDisassembler, backend, &config);
+                let mut engine = InjectorEngine::new(IcedX86Disassembler, backend, &config);
                 run_engine(&mut engine, &config)
             }
         }

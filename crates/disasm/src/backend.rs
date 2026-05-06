@@ -1,5 +1,7 @@
 use sandblaster_core::InstructionBytes;
 
+const X86_64_BITNESS: u32 = 64;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodeOutput {
     pub mnemonic: String,
@@ -33,5 +35,64 @@ impl DisasmBackend for NullDisassembler {
             length: 0,
             known: false,
         })
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IcedX86Disassembler;
+
+impl DisasmBackend for IcedX86Disassembler {
+    fn name(&self) -> &'static str {
+        "iced-x86"
+    }
+
+    fn decode_first(&self, instruction: &InstructionBytes) -> Result<DecodeOutput, DecodeError> {
+        let bytes = &instruction.bytes()[..sandblaster_core::MAX_INSN_LENGTH];
+        let mut decoder =
+            iced_x86::Decoder::new(X86_64_BITNESS, bytes, iced_x86::DecoderOptions::NONE);
+        let decoded = decoder.decode();
+
+        if decoded.is_invalid() {
+            return Ok(DecodeOutput {
+                mnemonic: "(unk)".to_string(),
+                operands: String::new(),
+                length: 0,
+                known: false,
+            });
+        }
+
+        Ok(DecodeOutput {
+            mnemonic: format!("{:?}", decoded.mnemonic()).to_ascii_lowercase(),
+            operands: String::new(),
+            length: decoded.len() as u32,
+            known: true,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sandblaster_core::InstructionBytes;
+
+    use crate::backend::{DisasmBackend, IcedX86Disassembler};
+
+    #[test]
+    fn iced_decodes_known_instruction_length() {
+        let decoded = IcedX86Disassembler
+            .decode_first(&InstructionBytes::from_slice(&[0x90]))
+            .expect("decode should succeed");
+
+        assert!(decoded.known);
+        assert_eq!(decoded.length, 1);
+    }
+
+    #[test]
+    fn iced_reports_unknown_instruction_like_capstone_raw_path() {
+        let decoded = IcedX86Disassembler
+            .decode_first(&InstructionBytes::from_slice(&[0x82]))
+            .expect("decode should succeed");
+
+        assert!(!decoded.known);
+        assert_eq!(decoded.length, 0);
     }
 }

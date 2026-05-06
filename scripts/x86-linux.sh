@@ -77,7 +77,7 @@ cd "${REPO_ROOT}"
 
 case "${command}" in
     check)
-        cargo check -p sandblaster-injector
+        cargo check --target x86_64-unknown-linux-gnu -p sandblaster-injector
         ;;
     build)
         cargo build -p sandblaster-injector -p sandblaster-cli "$@"

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+iced-x86 = { version = "1.21.0", default-features = false, features = ["std", "decoder"] }
 sandblaster-core = { path = "../core" }
 
 [lib]
