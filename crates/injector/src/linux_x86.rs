@@ -275,6 +275,7 @@ impl SignalHandlers {
             libc::SIGFPE,
             libc::SIGBUS,
             libc::SIGTRAP,
+            libc::SIGALRM,
         ];
 
         let mut previous = Vec::with_capacity(signals.len());
@@ -701,8 +702,33 @@ impl LinuxX86Backend {
             PACKET_START = probe.packet_start;
             PREAMBLE_LENGTH = probe.preamble_length;
             SIGNAL_MODE = SignalMode::ExecuteProbe;
+            let _alarm = ProbeAlarm::arm();
             jump_to_probe(probe.packet_start, stack_top);
             Ok(CURRENT_OBSERVATION)
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+struct ProbeAlarm;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl ProbeAlarm {
+    fn arm() -> Self {
+        // SAFETY: `alarm` configures the process timer. The injector runs probes synchronously.
+        unsafe {
+            libc::alarm(1);
+        }
+        Self
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+impl Drop for ProbeAlarm {
+    fn drop(&mut self) {
+        // SAFETY: cancel the process timer armed for this probe.
+        unsafe {
+            libc::alarm(0);
         }
     }
 }
@@ -921,6 +947,6 @@ mod tests {
 
         let handlers = SignalHandlers::install(super::scaffold_signal_handler)
             .expect("handlers should install");
-        assert_eq!(handlers.count(), 5);
+        assert_eq!(handlers.count(), 6);
     }
 }

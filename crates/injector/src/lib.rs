@@ -37,6 +37,7 @@ pub struct InjectorConfig {
     pub blacklists: Vec<InstructionBytes>,
     pub jobs: usize,
     pub range_bytes: usize,
+    pub dry_run: bool,
 }
 
 impl Default for InjectorConfig {
@@ -57,6 +58,7 @@ impl Default for InjectorConfig {
             blacklists: Vec::new(),
             jobs: 1,
             range_bytes: 0,
+            dry_run: false,
         }
     }
 }
@@ -97,6 +99,7 @@ impl InjectorConfig {
                 "-0" => config.allow_null_access = true,
                 "-D" => config.allow_duplicate_prefixes = true,
                 "-N" => config.nx_support = false,
+                "--dry-run" => config.dry_run = true,
                 "-s" => {
                     index += 1;
                     config.seed = Some(parse_number(next_arg(args, index, "-s")?, "-s")?);
@@ -161,7 +164,8 @@ impl InjectorConfig {
 \t[-c core] ........... core on which to perform search\n\
 \t[-X blacklist] ...... blacklist the specified instruction\n\
 \t[-j jobs] ........... number of simultaneous jobs to run\n\
-\t[-l range_bytes] .... number of base instruction bytes in each sub range\n"
+\t[-l range_bytes] .... number of base instruction bytes in each sub range\n\
+\t[--dry-run] ......... generate deterministic synthetic observations\n"
     }
 }
 

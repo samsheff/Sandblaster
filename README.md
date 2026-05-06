@@ -55,6 +55,19 @@ and recent findings. Use `--no-ui` for log-only automation:
 scripts/x86-linux.sh sifter --no-ui --unk --sync -- -b -B 1 -i 00 -e 10
 ```
 
+To validate the frontend, logs, and UI without executing generated processor
+instructions, pass `--dry-run` through to the injector:
+
+```sh
+scripts/x86-linux.sh injector --dry-run -T -b -B 1 -i 90 -e 91
+
+SANDBLASTER_INJECTOR="$PWD/target/debug/injector" \
+scripts/x86-linux.sh sifter --unk --sync --tick -- --dry-run -b -B 1 -i 90 -e 91
+```
+
+If dry-run increments `tested` but the same command without `--dry-run` stays at
+zero, the unsafe native execution backend is stuck before its first result.
+
 The runner intentionally refuses to run unless `uname` reports Linux on
 `x86_64`/`amd64`. The smoke commands avoid `-0` null-page mode and do not need
 root; scans that use `-0` still need the same privileges as the reference

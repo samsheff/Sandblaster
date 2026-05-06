@@ -4,8 +4,8 @@ use std::process::ExitCode;
 
 use sandblaster_disasm::NullDisassembler;
 use sandblaster_injector::{
-    InjectorConfig, InjectorEngine, InjectorEvent, LinuxX86Backend, OutputMode, RawInjectorPacket,
-    TextReport,
+    BackendObservation, ExecutionBackend, InjectorConfig, InjectorEngine, InjectorEvent,
+    LinuxX86Backend, OutputMode, RawInjectorPacket, TextReport,
 };
 
 fn main() -> ExitCode {
@@ -17,20 +17,42 @@ fn main() -> ExitCode {
 
     match InjectorConfig::parse_args(&args) {
         Ok(config) => {
-            let backend = match LinuxX86Backend::from_config(&config) {
-                Ok(backend) => backend,
-                Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::from(2);
-                }
-            };
-            let mut engine = InjectorEngine::new(NullDisassembler, backend, &config);
-            run_engine(&mut engine, &config)
+            if config.dry_run {
+                let mut engine = InjectorEngine::new(NullDisassembler, DryRunBackend, &config);
+                run_engine(&mut engine, &config)
+            } else {
+                let backend = match LinuxX86Backend::from_config(&config) {
+                    Ok(backend) => backend,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        return ExitCode::from(2);
+                    }
+                };
+                let mut engine = InjectorEngine::new(NullDisassembler, backend, &config);
+                run_engine(&mut engine, &config)
+            }
         }
         Err(error) => {
             eprintln!("{error}");
             ExitCode::from(1)
         }
+    }
+}
+
+struct DryRunBackend;
+
+impl ExecutionBackend for DryRunBackend {
+    fn execute(
+        &mut self,
+        instruction: &sandblaster_core::InstructionBytes,
+    ) -> Result<BackendObservation, String> {
+        Ok(BackendObservation {
+            valid: 1,
+            length: instruction.specified_len() as u32,
+            signum: 5,
+            si_code: 0,
+            fault_addr: u32::MAX,
+        })
     }
 }
 
