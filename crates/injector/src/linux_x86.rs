@@ -18,6 +18,11 @@ const DEFAULT_ALTSTACK_SIZE: usize = 64 * 1024;
 const TF: usize = 0x100;
 const UD2_SIZE: usize = 2;
 const JMP_LENGTH: usize = 16;
+const TRAP_FLAG_PREAMBLE: [u8; 10] = [
+    0x9c, // pushfq
+    0x48, 0x81, 0x0c, 0x24, 0x00, 0x01, 0x00, 0x00, // orq $0x100,(%rsp)
+    0x9d, // popfq
+];
 
 #[cfg(target_os = "linux")]
 const PROT_NONE: i32 = 0x0;
@@ -163,6 +168,7 @@ impl FaultModel {
 pub struct TrapFlagPreamble {
     pub trap_flag_mask: usize,
     pub ud2_size: usize,
+    pub byte_len: usize,
 }
 
 impl Default for TrapFlagPreamble {
@@ -170,6 +176,7 @@ impl Default for TrapFlagPreamble {
         Self {
             trap_flag_mask: TF,
             ud2_size: UD2_SIZE,
+            byte_len: TRAP_FLAG_PREAMBLE.len(),
         }
     }
 }
@@ -456,21 +463,29 @@ impl ExecutableRegion {
         self.load_probe(
             instruction,
             instruction.specified_len().max(MAX_INSN_LENGTH),
+            &[],
         );
     }
 
-    pub fn load_probe(&mut self, instruction: &InstructionBytes, probe_length: usize) {
+    pub fn load_probe(
+        &mut self,
+        instruction: &InstructionBytes,
+        probe_length: usize,
+        preamble: &[u8],
+    ) {
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (instruction, probe_length);
+            let _ = (instruction, probe_length, preamble);
         }
 
         #[cfg(target_os = "linux")]
         {
-            let target = self.packet_start(probe_length);
+            let entry = self.probe_entry(probe_length, preamble.len());
+            let target = self.instruction_start(probe_length, preamble.len());
             // SAFETY: the instruction is copied into the writable/executable code page.
             unsafe {
                 std::ptr::write_bytes(self.base.as_ptr(), 0, self.page_size);
+                std::ptr::copy_nonoverlapping(preamble.as_ptr(), entry, preamble.len());
                 std::ptr::copy_nonoverlapping(
                     instruction.bytes().as_ptr(),
                     target,
@@ -480,18 +495,37 @@ impl ExecutableRegion {
         }
     }
 
-    pub fn packet_start(&self, insn_size: usize) -> *mut u8 {
+    pub fn probe_entry(&self, insn_size: usize, preamble_length: usize) -> *mut u8 {
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = insn_size;
+            let _ = (insn_size, preamble_length);
             std::ptr::null_mut()
         }
 
         #[cfg(target_os = "linux")]
         {
-            let offset = self.page_size.saturating_sub(insn_size);
+            let offset = self
+                .page_size
+                .saturating_sub(insn_size.saturating_add(preamble_length));
             // SAFETY: offset is bounded to the page size, so this stays inside the code page.
             unsafe { self.base.as_ptr().add(offset) }
+        }
+    }
+
+    pub fn instruction_start(&self, insn_size: usize, preamble_length: usize) -> *mut u8 {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (insn_size, preamble_length);
+            std::ptr::null_mut()
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: the instruction immediately follows the preamble inside the code page.
+            unsafe {
+                self.probe_entry(insn_size, preamble_length)
+                    .add(preamble_length)
+            }
         }
     }
 
@@ -645,9 +679,12 @@ impl LinuxX86Backend {
 
     pub fn build_probe_context(&self, probe_length: usize) -> ProbeContext {
         ProbeContext {
-            packet_start: self.region.packet_start(probe_length) as usize,
+            packet_start: self
+                .region
+                .probe_entry(probe_length, self.preamble.byte_len)
+                as usize,
             page_end: self.region.sentinel_page() as usize,
-            preamble_length: self.preamble.ud2_size,
+            preamble_length: self.preamble.byte_len,
             probe_length,
         }
     }
@@ -659,7 +696,8 @@ impl ExecutionBackend for LinuxX86Backend {
         {
             let mut result = BackendObservation::default();
             for probe_length in 1..=self.fault_model.max_instruction_length {
-                self.region.load_probe(instruction, probe_length);
+                self.region
+                    .load_probe(instruction, probe_length, &TRAP_FLAG_PREAMBLE);
                 if self.enable_null_access {
                     // SAFETY: when enabled, `null_page_guard` owns a writable null page.
                     unsafe {
@@ -758,6 +796,8 @@ unsafe fn jump_to_probe(packet: usize, stack_top: usize) {
             "ud2",
             "lea r11, [rip + 3f]",
             "mov [{resume_slot}], r11",
+            "mov r11, {packet}",
+            "mov rsp, {stack_top}",
             "mov byte ptr [{mode_slot}], 1",
             "xor rax, rax",
             "xor rcx, rcx",
@@ -771,8 +811,7 @@ unsafe fn jump_to_probe(packet: usize, stack_top: usize) {
             "xor r13, r13",
             "xor r14, r14",
             "xor r15, r15",
-            "mov rsp, {stack_top}",
-            "jmp {packet}",
+            "jmp r11",
             "3:",
             resume_slot = in(reg) resume_slot,
             mode_slot = in(reg) mode_slot,
@@ -933,6 +972,7 @@ mod tests {
         let preamble = TrapFlagPreamble::default();
         assert_eq!(preamble.trap_flag_mask, TF);
         assert_eq!(preamble.ud2_size, UD2_SIZE);
+        assert_eq!(preamble.byte_len, super::TRAP_FLAG_PREAMBLE.len());
     }
 
     #[cfg(target_os = "linux")]
@@ -948,7 +988,8 @@ mod tests {
             ExecutableRegion::allocate(environment.page_size, true).expect("mapping should work");
         let instruction = InstructionBytes::from_slice(&[0x90, 0xcc]);
         region.load_instruction(&instruction);
-        let packet_start = region.packet_start(instruction.specified_len().max(MAX_INSN_LENGTH));
+        let packet_start =
+            region.instruction_start(instruction.specified_len().max(MAX_INSN_LENGTH), 0);
         // SAFETY: `packet_start` points to bytes we just copied into the code page.
         let loaded =
             unsafe { std::slice::from_raw_parts(packet_start, instruction.specified_len()) };
