@@ -2,16 +2,16 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, IsTerminal, Read, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sandblaster_core::{
     CpuMetadata, ExecutionResult, FilterConfig, LegacyArtifactRecord, LegacyHeader, LegacyLog,
-    RAW_REPORT_INSN_BYTES,
+    TargetSpec, RAW_REPORT_INSN_BYTES,
 };
-use sandblaster_injector::RawInjectorPacket;
+use sandblaster_injector::VersionedPacket;
 
 const DATA_DIR: &str = "data";
 const LOG_PATH: &str = "data/log";
@@ -57,6 +57,7 @@ struct ScanStats {
     recent_results: VecDeque<ExecutionResult>,
     recent_artifacts: VecDeque<ExecutionResult>,
     artifacts: BTreeMap<Vec<u8>, ExecutionResult>,
+    target: Option<TargetSpec>,
     started: Instant,
 }
 
@@ -69,6 +70,7 @@ impl ScanStats {
             recent_results: VecDeque::with_capacity(INSTRUCTION_LOG_LEN),
             recent_artifacts: VecDeque::with_capacity(ARTIFACT_LOG_LEN),
             artifacts: BTreeMap::new(),
+            target: None,
             started: Instant::now(),
         }
     }
@@ -249,19 +251,21 @@ fn run(config: CliConfig) -> Result<(), String> {
     };
 
     let mut child = spawn_injector(&injector_args)?;
-    let mut stdout = child
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "failed to capture injector stdout".to_string())?;
+    let mut lines = BufReader::new(stdout).lines();
     let mut stats = ScanStats::new();
     let mut live = LiveDisplay::new(config.live_ui && io::stdout().is_terminal());
     live.maybe_draw(&stats, true).map_err(write_error)?;
-    let mut raw = [0_u8; 44];
 
-    loop {
-        match stdout.read_exact(&mut raw) {
-            Ok(()) => {
-                let result = RawInjectorPacket::from_bytes(raw).into_execution_result();
+    while let Some(line) = lines.next() {
+        match line {
+            Ok(line) => {
+                let packet = VersionedPacket::parse_line(&line)?;
+                stats.target = Some(packet.target);
+                let result = packet.result;
                 stats.tested += 1;
                 stats.last_result = Some(result.clone());
                 if config.tick {
@@ -282,7 +286,6 @@ fn run(config: CliConfig) -> Result<(), String> {
                     live.maybe_draw(&stats, false).map_err(write_error)?;
                 }
             }
-            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(error) => return Err(format!("failed to read injector packet: {error}")),
         }
     }
@@ -414,7 +417,12 @@ fn write_final_log(
             artifacts_found: Some(stats.artifacts_found),
             runtime: Some(stats.elapsed_text()),
             seed: None,
-            arch: Some((usize::BITS).to_string()),
+            arch: Some(
+                stats
+                    .target
+                    .map(|target| target.name().to_string())
+                    .unwrap_or_else(|| (usize::BITS).to_string()),
+            ),
             date: Some(epoch_seconds_text()),
             cpu: CpuMetadata::from_cpuinfo_path("/proc/cpuinfo").unwrap_or_default(),
             extra_comments: Vec::new(),
@@ -506,10 +514,14 @@ fn write_findings(
     out.push_str("# injector\t");
     out.push_str(injector_command);
     out.push('\n');
-    out.push_str("executed_hex\traw_hex\tvalid\tlength\tsignum\tsi_code\tfault_addr\tdisas_known\tdisas_length\n");
+    out.push_str("target\texecuted_hex\traw_hex\tvalid\tlength\tsignum\tsi_code\tfault_addr\tdisas_known\tdisas_length\n");
     for result in stats.artifacts.values() {
         out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\n",
+            stats
+                .target
+                .map(|target| target.name())
+                .unwrap_or("unknown"),
             result.executed_key_hex(),
             result.raw_payload_hex(),
             result.valid,

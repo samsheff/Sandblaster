@@ -1,3 +1,4 @@
+mod android_arm64;
 mod engine;
 mod linux_x86;
 mod packet;
@@ -6,13 +7,16 @@ mod range;
 
 use std::fmt;
 
-use sandblaster_core::{parse_hex_instruction, DisasmResult, ExecutionResult, InstructionBytes};
+use sandblaster_core::{
+    parse_hex_instruction, DisasmResult, ExecutionResult, InstructionBytes, TargetSpec,
+};
 use sandblaster_disasm::DisasmBackend;
 use sandblaster_search::SearchMode;
 
+pub use android_arm64::AndroidArm64Backend;
 pub use engine::{ExecutionBackend, InjectorEngine, InjectorEvent};
 pub use linux_x86::{apply_cpu_affinity, LinuxX86Backend};
-pub use packet::{RawInjectorPacket, TextReport};
+pub use packet::{RawInjectorPacket, TextReport, VersionedPacket, VERSIONED_PACKET_PREFIX};
 pub use policy::{default_opcode_blacklist, default_prefix_blacklist, PrefixPolicy};
 pub use range::split_search_range;
 
@@ -24,6 +28,7 @@ pub enum OutputMode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InjectorConfig {
+    pub target: TargetSpec,
     pub mode: SearchMode,
     pub output_mode: OutputMode,
     pub show_tick: bool,
@@ -46,6 +51,7 @@ pub struct InjectorConfig {
 impl Default for InjectorConfig {
     fn default() -> Self {
         Self {
+            target: TargetSpec::host(),
             mode: SearchMode::Tunnel,
             output_mode: OutputMode::Text,
             show_tick: false,
@@ -105,6 +111,10 @@ impl InjectorConfig {
                 "-N" => config.nx_support = false,
                 "--dry-run" => config.dry_run = true,
                 "--worker" => config.worker = true,
+                "--target" => {
+                    index += 1;
+                    config.target = parse_target(next_arg(args, index, "--target")?)?;
+                }
                 "-s" => {
                     index += 1;
                     config.seed = Some(parse_number(next_arg(args, index, "-s")?, "-s")?);
@@ -197,6 +207,7 @@ impl InjectorConfig {
 \t[-X blacklist] ...... blacklist the specified instruction\n\
 \t[-j jobs] ........... number of simultaneous jobs to run\n\
 \t[-l range_bytes] .... number of base instruction bytes in each sub range\n\
+\t[--target target] ... linux-x86_64, android-arm64, ios-arm64, or host\n\
 \t[--dry-run] ......... generate deterministic synthetic observations\n"
     }
 }
@@ -266,6 +277,12 @@ fn parse_instruction(
 ) -> Result<InstructionBytes, InjectorParseError> {
     parse_hex_instruction(value)
         .map_err(|msg| InjectorParseError::InvalidValue(flag, msg.to_string()))
+}
+
+fn parse_target(value: &str) -> Result<TargetSpec, InjectorParseError> {
+    value
+        .parse()
+        .map_err(|_| InjectorParseError::InvalidValue("--target", value.to_string()))
 }
 
 #[cfg(test)]

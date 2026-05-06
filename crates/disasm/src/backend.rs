@@ -70,11 +70,38 @@ impl DisasmBackend for IcedX86Disassembler {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Arm64FixedDisassembler;
+
+impl DisasmBackend for Arm64FixedDisassembler {
+    fn name(&self) -> &'static str {
+        "arm64-fixed"
+    }
+
+    fn decode_first(&self, instruction: &InstructionBytes) -> Result<DecodeOutput, DecodeError> {
+        if instruction.specified_len() < 4 {
+            return Ok(DecodeOutput {
+                mnemonic: "(short)".to_string(),
+                operands: String::new(),
+                length: 0,
+                known: false,
+            });
+        }
+
+        Ok(DecodeOutput {
+            mnemonic: "aarch64".to_string(),
+            operands: String::new(),
+            length: 4,
+            known: true,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sandblaster_core::InstructionBytes;
 
-    use crate::backend::{DisasmBackend, IcedX86Disassembler};
+    use crate::backend::{Arm64FixedDisassembler, DisasmBackend, IcedX86Disassembler};
 
     #[test]
     fn iced_decodes_known_instruction_length() {
@@ -94,5 +121,15 @@ mod tests {
 
         assert!(!decoded.known);
         assert_eq!(decoded.length, 0);
+    }
+
+    #[test]
+    fn arm64_fixed_width_reports_four_byte_instructions() {
+        let decoded = Arm64FixedDisassembler
+            .decode_first(&InstructionBytes::from_slice(&[0x1f, 0x20, 0x03, 0xd5]))
+            .expect("decode should succeed");
+
+        assert!(decoded.known);
+        assert_eq!(decoded.length, 4);
     }
 }

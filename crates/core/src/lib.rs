@@ -3,6 +3,7 @@ pub mod cpu;
 pub mod instruction;
 pub mod legacy_format;
 pub mod result;
+pub mod target;
 
 pub use anomaly::{AnomalyKind, FilterConfig};
 pub use cpu::{CpuCapabilities, CpuMetadata};
@@ -14,3 +15,4 @@ pub use legacy_format::{
     LegacyArtifactRecord, LegacyHeader, LegacyLog, LegacyParseError, LegacyTick,
 };
 pub use result::{DisasmResult, ExecutionResult};
+pub use target::{Architecture, Platform, TargetSpec};

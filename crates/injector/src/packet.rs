@@ -1,4 +1,8 @@
-use sandblaster_core::{format_full_hex, ExecutionResult, RAW_REPORT_INSN_BYTES};
+use sandblaster_core::{
+    format_full_hex, parse_hex_instruction, ExecutionResult, TargetSpec, RAW_REPORT_INSN_BYTES,
+};
+
+pub const VERSIONED_PACKET_PREFIX: &str = "SB1";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RawInjectorPacket {
@@ -72,6 +76,84 @@ impl RawInjectorPacket {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VersionedPacket {
+    pub target: TargetSpec,
+    pub result: ExecutionResult,
+}
+
+impl VersionedPacket {
+    pub fn from_execution_result(target: TargetSpec, result: &ExecutionResult) -> Self {
+        Self {
+            target,
+            result: result.clone(),
+        }
+    }
+
+    pub fn to_line(&self) -> String {
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\n",
+            VERSIONED_PACKET_PREFIX,
+            self.target.platform,
+            self.target.architecture,
+            self.result.disasm.length,
+            u8::from(self.result.disasm.known),
+            self.result.valid,
+            self.result.length,
+            self.result.signum,
+            self.result.si_code,
+            self.result.fault_addr,
+            self.result.raw_payload_hex()
+        )
+    }
+
+    pub fn parse_line(line: &str) -> Result<Self, String> {
+        let fields: Vec<&str> = line.trim_end().split('\t').collect();
+        if fields.len() != 11 || fields[0] != VERSIONED_PACKET_PREFIX {
+            return Err("not a sandblaster v1 packet".to_string());
+        }
+
+        let target = match (fields[1], fields[2]) {
+            ("linux", "x86_64") => TargetSpec::linux_x86_64(),
+            ("android", "arm64") => TargetSpec::android_arm64(),
+            ("ios", "arm64") => TargetSpec::ios_arm64(),
+            _ => {
+                return Err(format!(
+                    "unsupported packet target {}/{}",
+                    fields[1], fields[2]
+                ))
+            }
+        };
+        let mut instruction =
+            parse_hex_instruction(fields[10]).map_err(|error| format!("bad raw hex: {error}"))?;
+        let length = parse_u32(fields[6], "length")?;
+        instruction.set_specified_len(length as usize);
+
+        Ok(Self {
+            target,
+            result: ExecutionResult {
+                disasm: sandblaster_core::DisasmResult {
+                    length: parse_u32(fields[3], "disas_length")?,
+                    known: parse_u32(fields[4], "disas_known")? != 0,
+                },
+                instruction,
+                valid: parse_u32(fields[5], "valid")?,
+                length,
+                signum: parse_u32(fields[7], "signum")?,
+                si_code: parse_u32(fields[8], "si_code")?,
+                fault_addr: u32::from_str_radix(fields[9], 16)
+                    .map_err(|_| "bad fault_addr".to_string())?,
+            },
+        })
+    }
+}
+
+fn parse_u32(value: &str, field: &'static str) -> Result<u32, String> {
+    value
+        .parse()
+        .map_err(|_| format!("bad numeric field {field}: {value}"))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextReport(pub String);
 
 impl TextReport {
@@ -99,5 +181,36 @@ impl TextReport {
             " {length_marker}r: ({:2}) {signal_name} {:3} {:08x} {}{}\n",
             result.length, result.si_code, result.fault_addr, raw_prefix, raw_tail
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sandblaster_core::{DisasmResult, ExecutionResult, InstructionBytes, TargetSpec};
+
+    use crate::packet::VersionedPacket;
+
+    #[test]
+    fn versioned_packet_round_trips_target_and_result() {
+        let result = ExecutionResult {
+            disasm: DisasmResult {
+                length: 4,
+                known: true,
+            },
+            instruction: InstructionBytes::from_slice(&[0x1f, 0x20, 0x03, 0xd5]),
+            valid: 1,
+            length: 4,
+            signum: 5,
+            si_code: 0,
+            fault_addr: u32::MAX,
+        };
+        let line =
+            VersionedPacket::from_execution_result(TargetSpec::android_arm64(), &result).to_line();
+        let parsed = VersionedPacket::parse_line(&line).expect("packet should parse");
+
+        assert_eq!(parsed.target, TargetSpec::android_arm64());
+        assert_eq!(parsed.result.disasm, result.disasm);
+        assert_eq!(parsed.result.raw_payload_hex(), result.raw_payload_hex());
+        assert_eq!(parsed.result.length, result.length);
     }
 }

@@ -8,6 +8,9 @@ pub struct PrefixPolicy {
 
 impl PrefixPolicy {
     pub fn validate(&self, instruction: &InstructionBytes) -> Result<(), &'static str> {
+        if self.max_prefix == usize::MAX {
+            return Ok(());
+        }
         let prefixes = leading_prefix_bytes(instruction.bytes());
         if prefixes.len() > self.max_prefix {
             return Err("prefix violation");

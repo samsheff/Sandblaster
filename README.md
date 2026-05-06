@@ -12,16 +12,20 @@ The current implementation provides:
 - anomaly filtering semantics copied from the Python frontend
 - search strategy abstractions for brute, random, tunnel, and driven modes
 - a Linux/x86_64 generated-code injector backend
+- an Android/ARM64 generated-code backend intended for on-device CLI runs
 - an `iced-x86` disassembler backend wired into injector raw packets
+- target-aware `SB1` result packets for new scans
 
 Current status:
 
 - `cargo test --workspace` validates the shared compatibility layer
-- `injector` emits legacy-compatible 44-byte raw packets
+- `injector -R` emits line-oriented `SB1` packets with target metadata
 - `disas_known` and `disas_length` are populated by a real x86_64 decoder
 - `sifter` records legacy findings in `data/log` and `data/sync`, plus additive
   `data/findings.tsv` and `data/summary` metadata
 - the native low-level execution backend is implemented for real `x86_64` Linux
+- the Android ARM64 backend executes fixed-width 4-byte probes in fork-isolated
+  child processes and reports the terminating signal
 - `injector -j` supervises multiple worker processes for finite brute/tunnel
   ranges, with `-l` controlling the split width
 
@@ -141,10 +145,54 @@ each deduplicated finding, while `data/summary` groups findings by opcode,
 leading prefix, signal, and disassembler class.
 
 The Rust disassembler is `iced-x86`; the reference used Capstone. The raw packet
-contract only records `disas_known` and `disas_length`, so mnemonic and operand
-formatting differences are intentionally not part of compatibility. If a bounded
-Capstone comparison is added locally, expected differences should be documented
-rather than hidden by changing raw packet layout.
+contract has been superseded by `SB1` packets for new scans. The x86 fields
+still record `disas_known` and `disas_length`, so mnemonic and operand
+formatting differences are intentionally not part of compatibility.
+
+## Running on Android ARM64
+
+The Android backend targets `aarch64-linux-android` and is meant to run through
+`adb shell` on a real ARM64 device:
+
+```sh
+scripts/android-arm64.sh check
+scripts/android-arm64.sh build
+scripts/android-arm64.sh push
+```
+
+Run a dry-run smoke test:
+
+```sh
+scripts/android-arm64.sh smoke
+```
+
+Run a bounded native probe using the ARM64 `nop` encoding:
+
+```sh
+scripts/android-arm64.sh exec-smoke
+```
+
+Run the local `sifter` frontend against the device injector:
+
+```sh
+scripts/android-arm64.sh sifter --no-ui --unk --sync -- -b -B 4 -i 1f2003d5 -e 1f2003d6
+```
+
+The first Android backend is intentionally conservative: ARM64 candidates are
+fixed-width 4-byte instructions, x86 prefix handling is disabled, and the result
+records currently include the child process signal rather than full `siginfo`
+and register-context recovery.
+
+## iOS ARM64
+
+iOS is represented as the `ios-arm64` target in shared configuration and packet
+plumbing, but native generated-code execution is expected to run inside a signed
+developer app/agent rather than a spawned CLI process. The scaffold lives in
+`mobile/ios-agent`.
+
+Start iOS work by linking the Rust library into an Xcode app target, running
+`--target ios-arm64 --dry-run` equivalent scan logic in-process, and then adding
+an entitlement-aware executable-memory feasibility probe on a physical device.
 
 ## Testing x86 Linux from macOS/arm
 

@@ -62,9 +62,9 @@ where
     ) -> Self {
         let range = SearchRange {
             start: config.start_instruction.unwrap_or_default(),
-            end: config
-                .end_instruction
-                .unwrap_or_else(|| InstructionBytes::new([0xff; 16], 15)),
+            end: config.end_instruction.unwrap_or_else(|| {
+                InstructionBytes::new([0xff; 16], config.target.max_instruction_len)
+            }),
         };
         let strategy = strategy.unwrap_or_else(|| strategy_from_config(config, range));
         Self {
@@ -81,9 +81,13 @@ where
                         .map(|item| (item, "user_blacklist")),
                 )
                 .collect(),
-            prefix_blacklist: crate::default_prefix_blacklist(cfg!(target_arch = "x86_64")),
+            prefix_blacklist: crate::default_prefix_blacklist(config.target.is_x86()),
             prefix_policy: PrefixPolicy {
-                max_prefix: config.max_prefix,
+                max_prefix: if config.target.is_x86() {
+                    config.max_prefix
+                } else {
+                    usize::MAX
+                },
                 allow_duplicate_prefixes: config.allow_duplicate_prefixes,
             },
         }
@@ -130,7 +134,13 @@ fn skipped_result(instruction: InstructionBytes, disasm: DisasmResult) -> Execut
 
 fn strategy_from_config(config: &InjectorConfig, range: SearchRange) -> Box<dyn SearchStrategy> {
     match config.mode {
-        SearchMode::Brute => Box::new(BruteStrategy::with_range(config.brute_depth, range)),
+        SearchMode::Brute => Box::new(BruteStrategy::with_range(
+            config
+                .target
+                .fixed_instruction_len
+                .unwrap_or(config.brute_depth),
+            range,
+        )),
         SearchMode::Random => Box::new(RandomStrategy::new(config.seed.unwrap_or(0x5eed), range)),
         SearchMode::Tunnel => Box::new(TunnelStrategy::with_range(range)),
         SearchMode::Driven => Box::new(DrivenStrategy::new(VecDeque::new())),

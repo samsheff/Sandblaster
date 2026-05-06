@@ -1,5 +1,6 @@
 mod backend;
 
 pub use backend::{
-    DecodeError, DecodeOutput, DisasmBackend, IcedX86Disassembler, NullDisassembler,
+    Arm64FixedDisassembler, DecodeError, DecodeOutput, DisasmBackend, IcedX86Disassembler,
+    NullDisassembler,
 };

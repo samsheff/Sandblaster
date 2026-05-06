@@ -3,10 +3,12 @@ use std::env;
 use std::io::{self, Read, Write};
 use std::process::{Command, ExitCode, Stdio};
 
-use sandblaster_disasm::IcedX86Disassembler;
+use sandblaster_core::{Architecture, Platform};
+use sandblaster_disasm::{Arm64FixedDisassembler, IcedX86Disassembler};
 use sandblaster_injector::{
-    apply_cpu_affinity, split_search_range, BackendObservation, ExecutionBackend, InjectorConfig,
-    InjectorEngine, InjectorEvent, LinuxX86Backend, OutputMode, RawInjectorPacket, TextReport,
+    apply_cpu_affinity, split_search_range, AndroidArm64Backend, BackendObservation,
+    ExecutionBackend, InjectorConfig, InjectorEngine, InjectorEvent, LinuxX86Backend, OutputMode,
+    TextReport, VersionedPacket,
 };
 use sandblaster_search::{SearchMode, SearchRange};
 
@@ -30,46 +32,72 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             }
-            if config.dry_run {
-                let candidates = driven_candidates(&config);
-                let mut engine = if let Some(candidates) = candidates {
-                    InjectorEngine::new_with_driven_candidates(
-                        IcedX86Disassembler,
-                        DryRunBackend,
-                        &config,
-                        candidates,
-                    )
-                } else {
-                    InjectorEngine::new(IcedX86Disassembler, DryRunBackend, &config)
-                };
-                run_engine(&mut engine, &config)
-            } else {
-                let backend = match LinuxX86Backend::from_config(&config) {
-                    Ok(backend) => backend,
-                    Err(error) => {
-                        eprintln!("{error}");
-                        return ExitCode::from(2);
-                    }
-                };
-                let candidates = driven_candidates(&config);
-                let mut engine = if let Some(candidates) = candidates {
-                    InjectorEngine::new_with_driven_candidates(
-                        IcedX86Disassembler,
-                        backend,
-                        &config,
-                        candidates,
-                    )
-                } else {
-                    InjectorEngine::new(IcedX86Disassembler, backend, &config)
-                };
-                run_engine(&mut engine, &config)
-            }
+            run_selected_target(&config)
         }
         Err(error) => {
             eprintln!("{error}");
             ExitCode::from(1)
         }
     }
+}
+
+fn run_selected_target(config: &InjectorConfig) -> ExitCode {
+    if config.dry_run {
+        let backend = DryRunBackend {
+            fixed_len: config.target.fixed_instruction_len,
+        };
+        return match config.target.architecture {
+            Architecture::Arm64 => run_backend(Arm64FixedDisassembler, backend, config),
+            Architecture::X86_64 => run_backend(IcedX86Disassembler, backend, config),
+        };
+    }
+
+    match (config.target.platform, config.target.architecture) {
+        (Platform::Linux, Architecture::X86_64) => {
+            let backend = match LinuxX86Backend::from_config(config) {
+                Ok(backend) => backend,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::from(2);
+                }
+            };
+            run_backend(IcedX86Disassembler, backend, config)
+        }
+        (Platform::Android, Architecture::Arm64) => {
+            let backend = match AndroidArm64Backend::from_config(config) {
+                Ok(backend) => backend,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::from(2);
+                }
+            };
+            run_backend(Arm64FixedDisassembler, backend, config)
+        }
+        (Platform::Ios, Architecture::Arm64) => {
+            eprintln!(
+                "ios-arm64 native execution is provided by the iOS app/agent, not this CLI binary"
+            );
+            ExitCode::from(2)
+        }
+        _ => {
+            eprintln!("unsupported target {}", config.target.name());
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_backend<D, E>(disasm: D, backend: E, config: &InjectorConfig) -> ExitCode
+where
+    D: sandblaster_disasm::DisasmBackend,
+    E: sandblaster_injector::ExecutionBackend,
+{
+    let candidates = driven_candidates(config);
+    let mut engine = if let Some(candidates) = candidates {
+        InjectorEngine::new_with_driven_candidates(disasm, backend, config, candidates)
+    } else {
+        InjectorEngine::new(disasm, backend, config)
+    };
+    run_engine(&mut engine, config)
 }
 
 fn driven_candidates(
@@ -100,7 +128,7 @@ fn run_supervisor(original_args: &[String], config: &InjectorConfig) -> ExitCode
     let total = SearchRange {
         start: config.start_instruction.unwrap_or_default(),
         end: config.end_instruction.unwrap_or_else(|| {
-            sandblaster_core::InstructionBytes::new([0xff; 16], sandblaster_core::MAX_INSN_LENGTH)
+            sandblaster_core::InstructionBytes::new([0xff; 16], config.target.max_instruction_len)
         }),
     };
     let range_bytes = config.range_bytes.max(1);
@@ -185,7 +213,10 @@ fn strip_value_flags(args: &[String], flags: &[&str]) -> Vec<String> {
     out
 }
 
-struct DryRunBackend;
+#[derive(Clone, Copy)]
+struct DryRunBackend {
+    fixed_len: Option<usize>,
+}
 
 impl ExecutionBackend for DryRunBackend {
     fn execute(
@@ -194,7 +225,9 @@ impl ExecutionBackend for DryRunBackend {
     ) -> Result<BackendObservation, String> {
         Ok(BackendObservation {
             valid: 1,
-            length: instruction.specified_len() as u32,
+            length: self
+                .fixed_len
+                .unwrap_or_else(|| instruction.specified_len().max(1)) as u32,
             signum: 5,
             si_code: 0,
             fault_addr: u32::MAX,
@@ -211,14 +244,14 @@ where
     loop {
         match engine.next_event() {
             Ok(Some(InjectorEvent::Executed(result))) => {
-                if emit_result(&result, config.output_mode).is_err() {
+                if emit_result(&result, config).is_err() {
                     return ExitCode::from(1);
                 }
                 emitted += 1;
                 maybe_emit_tick(&result, config, emitted);
             }
             Ok(Some(InjectorEvent::Skipped(result, reason))) => {
-                if emit_result(&result, config.output_mode).is_err() {
+                if emit_result(&result, config).is_err() {
                     return ExitCode::from(1);
                 }
                 emitted += 1;
@@ -248,12 +281,12 @@ fn maybe_emit_tick(
 
 fn emit_result(
     result: &sandblaster_core::ExecutionResult,
-    output_mode: OutputMode,
+    config: &InjectorConfig,
 ) -> io::Result<()> {
-    match output_mode {
+    match config.output_mode {
         OutputMode::Raw => {
-            let packet = RawInjectorPacket::from_execution_result(result);
-            io::stdout().write_all(&packet.to_bytes())
+            let packet = VersionedPacket::from_execution_result(config.target, result);
+            io::stdout().write_all(packet.to_line().as_bytes())
         }
         OutputMode::Text => {
             let report = TextReport::from_execution_result(result);
