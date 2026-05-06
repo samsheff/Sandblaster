@@ -141,6 +141,33 @@ impl InjectorConfig {
                     config.range_bytes = parse_number(next_arg(args, index, "-l")?, "-l")?;
                 }
                 "-?" | "--help" => {}
+                _ if arg.starts_with("-s") && arg.len() > 2 => {
+                    config.seed = Some(parse_number(&arg[2..], "-s")?);
+                }
+                _ if arg.starts_with("-B") && arg.len() > 2 => {
+                    config.brute_depth = parse_number(&arg[2..], "-B")?;
+                }
+                _ if arg.starts_with("-P") && arg.len() > 2 => {
+                    config.max_prefix = parse_number(&arg[2..], "-P")?;
+                }
+                _ if arg.starts_with("-i") && arg.len() > 2 => {
+                    config.start_instruction = Some(parse_instruction(&arg[2..], "-i")?);
+                }
+                _ if arg.starts_with("-e") && arg.len() > 2 => {
+                    config.end_instruction = Some(parse_instruction(&arg[2..], "-e")?);
+                }
+                _ if arg.starts_with("-c") && arg.len() > 2 => {
+                    config.core = Some(parse_number(&arg[2..], "-c")?);
+                }
+                _ if arg.starts_with("-X") && arg.len() > 2 => {
+                    config.blacklists.push(parse_instruction(&arg[2..], "-X")?);
+                }
+                _ if arg.starts_with("-j") && arg.len() > 2 => {
+                    config.jobs = parse_number(&arg[2..], "-j")?;
+                }
+                _ if arg.starts_with("-l") && arg.len() > 2 => {
+                    config.range_bytes = parse_number(&arg[2..], "-l")?;
+                }
                 _ => return Err(InjectorParseError::UnexpectedArgument(arg.clone())),
             }
             index += 1;
@@ -281,6 +308,29 @@ mod tests {
         assert_eq!(config.output_mode, OutputMode::Raw);
         assert_eq!(config.seed, Some(7));
         assert_eq!(config.jobs, 4);
+    }
+
+    #[test]
+    fn parses_compact_value_flags() {
+        let args = vec![
+            "-t".to_string(),
+            "-P1".to_string(),
+            "-B1".to_string(),
+            "-i00".to_string(),
+            "-eff".to_string(),
+        ];
+        let config = InjectorConfig::parse_args(&args).expect("injector args should parse");
+        assert_eq!(config.mode, SearchMode::Tunnel);
+        assert_eq!(config.max_prefix, 1);
+        assert_eq!(config.brute_depth, 1);
+        assert_eq!(
+            config.start_instruction,
+            Some(InstructionBytes::from_slice(&[0x00]))
+        );
+        assert_eq!(
+            config.end_instruction,
+            Some(InstructionBytes::from_slice(&[0xff]))
+        );
     }
 
     #[test]
